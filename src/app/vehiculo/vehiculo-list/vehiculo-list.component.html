@@ -1,0 +1,28 @@
+<div class="container-fluid p-0">
+  <div class="header">
+    <img src="assets/images/title.png" alt="Comercialización de Automotores" class="banner-img">
+  </div>
+  <div class="banner">
+    <img src="assets/images/banner.png" alt="Comercialización de Automotores" class="banner-img">
+  </div>
+  <div class="table-container">
+    <table class="table table-bordered">
+      <thead>
+      <tr>
+        <th scope="col">#</th>
+        <th scope="col">Marca</th>
+        <th scope="col">Línea</th>
+        <th scope="col">Modelo</th>
+      </tr>
+      </thead>
+      <tbody>
+      <tr *ngFor="let vehiculo of vehiculos; let i = index">
+        <th scope="row">{{ i + 1 }}</th>
+        <td>{{ vehiculo.marca }}</td>
+        <td>{{ vehiculo.linea }}</td>
+        <td>{{ vehiculo.modelo }}</td>
+      </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
