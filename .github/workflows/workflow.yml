@@ -1,0 +1,226 @@
+name: Workflow para creacion de release y merge a master
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # JOB 1: Tests y Validación
+  test-and-build:
+    name: Tests y Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout de repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Ejecutar Lint
+        run: npm run lint --if-present
+        continue-on-error: true
+
+      - name: Ejecutar tests con Karma/Jasmine
+        run: npm test -- --no-watch --code-coverage --browsers=ChromeHeadlessCI
+
+      - name: Build de producción
+        run: npm run build -- --configuration production
+
+  # JOB 2: Release y Merge (solo si los tests pasan)
+  release-and-merge:
+    name: Release y Merge a Main
+    runs-on: ubuntu-latest
+    needs: test-and-build
+
+    steps:
+      - name: Checkout de repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Git
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Definir versión
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Obtener el último tag y incrementar automáticamente
+            git fetch --tags
+            LAST_TAG=$(git tag -l "v*" | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n1)
+
+            if [ -z "$LAST_TAG" ]; then
+              VERSION="1.0.0"
+            else
+              # Extraer números de la versión
+              LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
+              MAJOR=$(echo $LAST_VERSION | cut -d. -f1)
+              MINOR=$(echo $LAST_VERSION | cut -d. -f2)
+              PATCH=$(echo $LAST_VERSION | cut -d. -f3)
+
+              # Incrementar PATCH por defecto
+              # Si el commit message contiene [major] o [minor], incrementar esos
+              COMMIT_MSG=$(git log -1 --pretty=%B)
+
+              if echo "$COMMIT_MSG" | grep -qi "\[major\]"; then
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+              elif echo "$COMMIT_MSG" | grep -qi "\[minor\]"; then
+                MINOR=$((MINOR + 1))
+                PATCH=0
+              else
+                PATCH=$((PATCH + 1))
+              fi
+
+              VERSION="$MAJOR.$MINOR.$PATCH"
+            fi
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Versión definida: v$VERSION"
+
+      - name: Crear rama Release
+        run: |
+          RELEASE_BRANCH="release_$VERSION"
+          echo "RELEASE_BRANCH=$RELEASE_BRANCH" >> $GITHUB_ENV
+          echo "Creando rama: $RELEASE_BRANCH"
+
+          # Eliminar rama release si ya existe (de intentos previos)
+          git push origin --delete "$RELEASE_BRANCH" 2>/dev/null || echo "Rama release no existía en remoto"
+          git branch -D "$RELEASE_BRANCH" 2>/dev/null || echo "Rama release no existía localmente"
+
+          git checkout develop
+          git pull origin develop
+          git checkout -b "$RELEASE_BRANCH"
+
+          # Actualizar version en package.json
+          npm version $VERSION --no-git-tag-version
+          git add package.json
+          git add package-lock.json 2>/dev/null || echo "No package-lock.json to add"
+          git commit -m "chore: bump version to $VERSION" || echo "No hay cambios en package.json"
+
+          git push -u origin "$RELEASE_BRANCH"
+
+      - name: Mezcla Release -> Main
+        if: success()
+        run: |
+          git checkout main
+          git pull origin main
+
+          # Merge aceptando siempre la versión de release en caso de conflicto
+          git merge "$RELEASE_BRANCH" -X theirs -m "chore: merge release $VERSION to main" || {
+            echo "Conflicto detectado, resolviendo automáticamente..."
+            git checkout --theirs .
+            git add .
+            git commit -m "chore: merge release $VERSION to main (auto-resolved)"
+          }
+
+          git push origin main
+
+      - name: Crear tag de versión
+        if: success()
+        run: |
+          git checkout main
+          git pull origin main
+
+          # Verificar si el tag ya existe
+          if git tag -l "v$VERSION" | grep -q "v$VERSION"; then
+            echo "Tag v$VERSION ya existe, eliminando..."
+            git tag -d "v$VERSION" || true
+            git push origin --delete "v$VERSION" || true
+          fi
+
+          # Crear nuevo tag
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+          echo "Tag creado: v$VERSION"
+
+      - name: Generar Release Notes
+        if: success()
+        run: |
+          # Obtener el tag anterior
+          PREV_TAG=$(git tag -l "v*" | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n2 | head -n1)
+
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          # Generar changelog
+          echo "# Release v$VERSION" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## Cambios desde $PREV_TAG" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+
+          # Commits agrupados por tipo
+          echo "### Features ✨" >> RELEASE_NOTES.md
+          git log $PREV_TAG..HEAD --oneline --grep="^feat" >> RELEASE_NOTES.md || echo "- Ninguno" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+
+          echo "### Bug Fixes 🐛" >> RELEASE_NOTES.md
+          git log $PREV_TAG..HEAD --oneline --grep="^fix" >> RELEASE_NOTES.md || echo "- Ninguno" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+
+          echo "### Otros cambios 🔧" >> RELEASE_NOTES.md
+          git log $PREV_TAG..HEAD --oneline --invert-grep --grep="^feat\|^fix" >> RELEASE_NOTES.md || echo "- Ninguno" >> RELEASE_NOTES.md
+
+          cat RELEASE_NOTES.md
+
+      - name: Crear GitHub Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.VERSION }}
+          release_name: Release v${{ env.VERSION }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+
+      - name: Merge Main -> Develop
+        if: success()
+        run: |
+          git checkout develop
+          git pull origin develop
+          git merge main -m "chore: sync develop with main after release v$VERSION"
+          git push origin develop
+
+      - name: Limpiar rama de release
+        if: success()
+        run: |
+          git push origin --delete "$RELEASE_BRANCH" || echo "Rama ya eliminada"
+
+      - name: Notificar éxito
+        if: success()
+        run: |
+          echo "Release v$VERSION completado exitosamente"
+          echo "Código integrado en main"
+          echo "Tag v$VERSION creado"
+          echo "Release notes generadas"
+          echo "Cambios sincronizados en develop"
+
+      - name: Notificar error
+        if: failure()
+        run: |
+          echo "Error en el proceso de release"
+          echo "Revisa los logs anteriores para más detalles"
