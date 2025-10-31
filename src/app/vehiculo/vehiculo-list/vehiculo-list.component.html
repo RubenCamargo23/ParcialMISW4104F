@@ -24,5 +24,11 @@
       </tr>
       </tbody>
     </table>
+
+    <div>
+      <p *ngFor="let item of brandTotals" class="total-item">
+        <strong>Total {{ item.marca }}:</strong> {{ item.total }}
+      </p>
+    </div>
   </div>
 </div>
