@@ -6,7 +6,7 @@ import {BrandTotal} from "../brandtotal";
 @Component({
   selector: 'app-vehiculo-list',
   templateUrl: './vehiculo-list.component.html',
-  styleUrls: ['./vehiculo-list.component.scss']
+  styleUrls: ['./vehiculo-list.component.css']
 })
 export class VehiculoListComponent {
   vehiculos: Array<Vehiculo> = [];
